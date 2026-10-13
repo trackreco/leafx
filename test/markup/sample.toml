@@ -1,0 +1,11 @@
+# leafx config for the markup sample, test/markup/src/Sample.cc: every rule and every piece of markup.
+# Self-contained: run from anywhere with `leafx.py test/markup/sample.toml -o OUT`.
+source_root = "."   # relative to this file
+undefine = ["DEBUG"]
+strip_calls = ["dprint"]
+mplex_typedefs = ["src/Matrix.h"]
+prelude_includes = ["RecoTracker/MkFitCore/src/Matrix.h"]
+
+[[file]]
+src = "src/Sample.cc"
+out = "Sample.h"

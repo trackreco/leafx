@@ -1,0 +1,65 @@
+# leafx config: MkFitCore's propagation, generated for a HOST build (what test/run-test.sh compiles).
+# A device build differs in prelude_includes and keep_angle_includes: it includes its own Matriplex
+# and declares, in the target namespace, the names listed under EXTERNAL NAMES in leafx_report.txt.
+#
+# The source tree (a CMSSW src/ with RecoTracker/MkFitCore) comes from --source-root or
+# $LEAFX_SOURCE_ROOT. Paths below are relative to it.
+
+clang_format_style = ".clang-format"
+include_paths = ["."]   # for --verify; add the vdt headers with -I
+
+target_namespace = "mkfit::portable"
+annotation = "MKFIT_HOST_DEVICE"
+lane_param = "N"       # the template parameter
+lane_constant = "NN"   # the fixed width it replaces
+
+# #if blocks resolved before anything else (all others are kept as they are)
+undefine = ["DEBUG", "UNUSED"]
+define = []
+
+# statements removed: debug printouts
+strip_calls = ["dprint", "dprint_np", "dprintf", "dprintf_np", "dcall"]
+# `mkfit::X` written as `X`, so that a declaration in the target namespace can shadow it
+unqualify = ["mkfit"]
+drop_using_namespace = ["mkfit"]
+# the source files' own `#include <...>` (vdt): kept on the host; a device build supplies its own
+keep_angle_includes = true
+
+# `typedef Matriplex::Matriplex<..., NN> MPlexXX;` found here become `template <int N> using MPlexXX`
+mplex_typedefs = ["RecoTracker/MkFitCore/src/Matrix.h"]
+
+# What the generated code is compiled against. On the host: MkFitCore itself.
+prelude_includes = [
+  "RecoTracker/MkFitCore/src/Matrix.h",
+  "RecoTracker/MkFitCore/interface/Config.h",
+  "RecoTracker/MkFitCore/interface/PropagationConfig.h",
+  "RecoTracker/MkFitCore/interface/TrackerInfo.h",
+  "RecoTracker/MkFitCore/interface/MathInlineCore.h",
+  "RecoTracker/MkFitCore/interface/cms_common_macros.h",
+  "FWCore/Utilities/interface/CMSUnrollLoop.h",
+]
+
+# In dependency order: the header with the declarations (and their default arguments) first.
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlex.h"
+out = "PropagationMPlex.h"
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlexCommon.cc"
+out = "PropagationMPlexCommon.h"
+includes = ["PropagationMPlex.h"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlex.cc"
+out = "PropagationMPlexBarrel.h"
+includes = ["PropagationMPlex.h"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlexEndcap.cc"
+out = "PropagationMPlexEndcap.h"
+includes = ["PropagationMPlex.h"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlexPlane.cc"
+out = "PropagationMPlexPlane.h"
+includes = ["PropagationMPlex.h"]

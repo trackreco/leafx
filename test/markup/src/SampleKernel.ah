@@ -1,0 +1,17 @@
+// A minimal matrix kernel in the shape of the generated .ah files: an intrinsics branch that
+// steps a whole vector of lanes at a time, and a plain branch.
+#ifdef MPLEX_INTRINSICS
+
+for (int n = 0; n < N; n += MPLEX_INTRINSICS_WIDTH_BYTES / sizeof(T)) {
+  IntrVec_t a_0 = LD(a, 0);
+  ST(c, 0, a_0);
+}
+
+#else
+
+#pragma omp simd
+for (int n = 0; n < N; ++n) {
+  c[0 * N + n] = a[0 * N + n];
+}
+
+#endif

@@ -1,0 +1,7 @@
+# generated output, test binaries and logs: regenerate with leafx.py / test/run-test.sh
+out*/
+test/bin/
+test/markup/out/
+*.log
+__pycache__/
+test/out*/
