@@ -30,16 +30,18 @@ keep_angle_includes = true
 # `typedef Matriplex::Matriplex<..., NN> MPlexXX;` found here become `template <int N> using MPlexXX`
 mplex_typedefs = ["RecoTracker/MkFitCore/src/Matrix.h"]
 
-# What the generated code is compiled against. On the host: MkFitCore itself.
+# What the generated code is compiled against. On the host: MkFitCore itself. A leading '?' marks a
+# header that only some MkFitCore versions have (included if present).
 prelude_includes = [
   "RecoTracker/MkFitCore/src/Matrix.h",
   "RecoTracker/MkFitCore/interface/Config.h",
   "RecoTracker/MkFitCore/interface/PropagationConfig.h",
   "RecoTracker/MkFitCore/interface/TrackerInfo.h",
-  "RecoTracker/MkFitCore/interface/MathInlineCore.h",
+  "?RecoTracker/MkFitCore/interface/MathInlineCore.h",
+  "RecoTracker/MkFitCore/interface/Hit.h",  # getPhi(), getTheta() (or the header that has them)
   "RecoTracker/MkFitCore/interface/cms_common_macros.h",
   "RecoTracker/MkFitCore/interface/FunctionTypes.h",
-  "RecoTracker/MkFitCore/interface/TrackState.h",  # MiniPropagators: TrackState, SVector3
+  "?RecoTracker/MkFitCore/interface/TrackState.h",  # MiniPropagators: TrackState, SVector3
   "FWCore/Utilities/interface/CMSUnrollLoop.h",
 ]
 

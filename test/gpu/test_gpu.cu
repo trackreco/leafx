@@ -68,6 +68,7 @@ enum Fn {
   F_MiniR,
   F_MiniZ,
   F_Hermite,
+  F_MiniPlane,
   F_Count
 };
 const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
@@ -84,7 +85,8 @@ const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
                                 "kalmanOperationPlaneLocal (+detV, chi2Acc)",
                                 "mini_propagators: propagate_to_r",
                                 "mini_propagators: propagate_to_z",
-                                "mini_propagators: Hermite3D, two-point, t = 0.5"};
+                                "mini_propagators: Hermite3D, two-point, t = 0.5",
+                                "mini_propagators: InitialState::propagate_to_plane (per hit)"};
 
 MKFIT_HOST_DEVICE void run1(int f, const In1& in, Out1& o, const P::PropagationFlags& pf) {
   const int kfo = P::KFO_Update_Params | P::KFO_Calculate_Chi2 | P::KFO_Local_Cov;
@@ -158,6 +160,18 @@ MKFIT_HOST_DEVICE void run1(int f, const In1& in, Out1& o, const P::PropagationF
         o.par(0, i, 0) = v[i];
       o.x1[0] = sp.dalpha[0];
       o.fail[0] = sp.fail_flag[0];
+      break;
+    }
+    case F_MiniPlane: {
+      namespace MP = P::mini_propagators;
+      const P::SVector3 pos{{in.pnt[0], in.pnt[1], in.pnt[2]}};
+      const P::SVector3 zdir{{in.nrm[0], in.nrm[1], in.nrm[2]}};
+      MP::InitialState is(in.par, in.chg, 0);
+      MP::State c;
+      o.fail[0] = !is.propagate_to_plane(MP::PA_Line, pos, zdir, c, true);
+      const float v[6] = {c.x, c.y, c.z, c.px, c.py, c.pz};
+      for (int i = 0; i < 6; ++i)
+        o.par(0, i, 0) = v[i];
       break;
     }
   }

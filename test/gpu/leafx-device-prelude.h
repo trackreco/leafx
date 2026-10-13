@@ -37,6 +37,12 @@ namespace mkfit::portable {
 
   MKFIT_HOST_DEVICE inline float hipo(float x, float y) { return std::sqrt(x * x + y * y); }
   MKFIT_HOST_DEVICE inline float hipo_sqr(float x, float y) { return x * x + y * y; }
+  // MkFitCore versions that still have it (removed on mkfinder-v2p2-perf, 2026-09-12)
+  MKFIT_HOST_DEVICE inline void sincos4(const float x, float& sin, float& cos) {
+    const float x2 = x * x;
+    cos = 1.f - 0.5f * x2 + 0.04166667f * x2 * x2;
+    sin = x - 0.16666667f * x * x2;
+  }
   MKFIT_HOST_DEVICE inline bool isFinite(float x) {
     const unsigned int mask = 0x7f800000;
     union {
@@ -68,6 +74,19 @@ namespace mkfit::portable {
     bool apply_material = false;
     bool copy_input_state_on_fail = false;
     const TrackerInfo* tracker_info = nullptr;
+  };
+
+  // MkFitCore's SVector3 (a ROOT SMatrix vector) and ModuleInfo, as far as the copy uses them: the
+  // module plane for mini_propagators' propagate_to_plane()
+  struct SVector3 {
+    float v[3];
+    MKFIT_HOST_DEVICE float operator()(int i) const { return v[i]; }
+    MKFIT_HOST_DEVICE float operator[](int i) const { return v[i]; }
+  };
+  struct ModuleInfo {
+    SVector3 pos, zdir, xdir;
+    unsigned int detid;
+    unsigned short shapeid;
   };
 
   // MkFitCore's cpe_func is a std::function; on the device, a plain function pointer

@@ -123,11 +123,11 @@ splice = ["KalmanUtilsMPlex.icc"]
 [[file]]
 src = "RecoTracker/MkFitCore/src/MiniPropagators.h"
 out = "MiniPropagators.h"
-# host-only types (TrackState, SVector3): left out of the device copy
-skip = ["InitialStatePlex::copyIn_partial_track_state", "InitialState::propagate_to_plane"]
+# takes a TrackState, MkFitCore's host track: left out of the device copy. (SVector3 and ModuleInfo,
+# used by propagate_to_plane, are declared by the device prelude.)
+skip = ["InitialStatePlex::copyIn_partial_track_state"]
 
 [[file]]
 src = "RecoTracker/MkFitCore/src/MiniPropagators.cc"
 out = "MiniPropagatorsImpl.h"
 includes = ["MiniPropagators.h"]
-skip = ["InitialState::propagate_to_plane"]

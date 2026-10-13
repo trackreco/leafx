@@ -550,6 +550,15 @@ class FileXform:
             # (pp tokens are trivia, handled below)
             if t.kind != "id":
                 continue
+            if t.text == "throw" and self.cfg.get("rewrite_throw", True):
+                m = n + 1
+                while m < len(sig) and T[sig[m]].text != ";":
+                    m = sig.index(self.p.match[sig[m]]) + 1 if T[sig[m]].text in ("(", "[", "{") else m + 1
+                if m < len(sig) and m > n + 1:
+                    edits.append((t.start, T[sig[n + 1]].start, "LEAFX_THROW("))
+                    edits.append((T[sig[m]].start, T[sig[m]].start, ")"))
+                    self.report.note(self.src_rel, t.line, f"{fname}: throw -> LEAFX_THROW (a trap in device code)")
+                continue
             qualified_before = prev is not None and prev.text in ("::", ".", "->")
             # mkfit::X -> X, so that the target namespace can shadow X
             if t.text in self.unqualify and nxt is not None and nxt.text == "::" and not qualified_before:
@@ -595,7 +604,7 @@ class FileXform:
             # calls into the generated API: qualify, which also switches ADL off
             # (with N = NN, ADL through mkfit::PropagationFlags would find MkFitCore's own
             # non-template function and prefer it)
-            if not qualified_before and nxt is not None and nxt.text in ("(", "<"):
+            if not qualified_before and nxt is not None and nxt.text in ("(", "<") and t.text not in local:
                 explicit = f"<{self.lane}>" if (t.text in self.nondeducible and nxt.text == "(" and templated) else ""
                 if in_detail is not None and t.text in self.detail_names:
                     edits.append((t.start, t.start, f"{self.target}::{in_detail}::"))
@@ -603,7 +612,7 @@ class FileXform:
                         edits.append((t.end, t.end, explicit))
                     continue
                 if t.text in self.api_names:
-                    edits.append((t.start, t.start, f"{self.target}::"))
+                    edits.append((t.start, t.start, f"{self.api_names[t.text]}::"))
                     if explicit:
                         edits.append((t.end, t.end, explicit))
                     continue
@@ -1180,6 +1189,10 @@ def annotation_block(cfg):
     c = cfg.get("device_const", "MKFIT_DEVICE_CONST")
     return (f"#ifndef {a}\n#if defined(__CUDACC__) || defined(__HIPCC__)\n#define {a} __host__ __device__\n"
             f"#else\n#define {a}\n#endif\n#endif\n"
+            f"// throw: as it is on the host; in device code, which has no exceptions, the kernel is stopped\n"
+            f"#ifndef LEAFX_THROW\n#if defined(__CUDA_ARCH__)\n#define LEAFX_THROW(...) __trap()\n"
+            f"#elif defined(__HIP_DEVICE_COMPILE__)\n#define LEAFX_THROW(...) abort()\n"
+            f"#else\n#define LEAFX_THROW(...) throw __VA_ARGS__\n#endif\n#endif\n"
             f"// namespace-scope constant tables: in device memory in the device compilation pass\n"
             f"#ifndef {c}\n#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)\n#define {c} __device__\n"
             f"#else\n#define {c}\n#endif\n#endif\n")
@@ -1347,7 +1360,10 @@ def main():
         fh.write(f"#ifndef {guard_pref}leafx_types_h\n#define {guard_pref}leafx_types_h\n\n")
         fh.write(annotation_block(cfg) + "\n")
         for inc in cfg.get("prelude_includes", []):
-            fh.write(f'#include "{inc}"\n')
+            if inc.startswith("?"):  # optional: the header exists in some MkFitCore versions only
+                fh.write(f'#if __has_include("{inc[1:]}")\n#include "{inc[1:]}"\n#endif\n')
+            else:
+                fh.write(f'#include "{inc}"\n')
         fh.write("\n")
         fh.write(f"namespace {target} {{\n\n")
         fh.write("  // A non-deduced context: a pointer parameter to a Matriplex does not take part in the\n"
@@ -1382,15 +1398,17 @@ def main():
 
     # ---- pass 1: parse all, collect the API (functions in the mkfit namespace) ----
     files = []
-    api = set()
+    api = {}  # generated free functions: name -> the namespace they are generated in
     for fcfg in cfg["file"]:
         fx = FileXform(cfg, fcfg, mplex_types, api, report)
         files.append(fx)
         for it in fx.items:
-            if it.kind == "ns" and it.name in cfg.get("namespace_map", {"mkfit": ""}):
+            nsmap = cfg.get("namespace_map", {"mkfit": ""})
+            if it.kind == "ns" and it.name in nsmap:
+                target_ns = cfg.get("target_namespace", "mkfit::portable") + (f"::{nsmap[it.name]}" if nsmap[it.name] else "")
                 for c in it.children:
                     if c.kind in ("func", "decl") and c.name not in fx.skip_symbols and "::" not in c.name:
-                        api.add(c.name)
+                        api[c.name] = target_ns
 
     # ---- pass 1b: types templated on N, over all files (aliases, classes with Matriplex members) ----
     registry = {"types": set(mplex_types), "templated": set(), "members": {}, "bases": {}}

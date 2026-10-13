@@ -249,6 +249,7 @@ enum Fn {
   F_MiniR,
   F_MiniZ,
   F_Hermite,
+  F_MiniPlane,
   F_Count
 };
 const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
@@ -265,7 +266,8 @@ const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
                                 "kalmanOperationPlaneLocal (+detV, chi2Acc)",
                                 "mini_propagators: propagate_to_r",
                                 "mini_propagators: propagate_to_z",
-                                "mini_propagators: Hermite3D, two-point, t = 0.5"};
+                                "mini_propagators: Hermite3D, two-point, t = 0.5",
+                                "mini_propagators: InitialState::propagate_to_plane (per hit)"};
 bool fn_forward(int f) { return f == F_Z || f == F_KUpdEndcap || f == F_KChi2Endcap || f == F_MiniZ; }
 
 // The mini propagators: MkFitCore's classes (NN lanes) or the copy's class templates.
@@ -277,6 +279,7 @@ struct MiniP<true, N> {
   using SP = mkfit::mini_propagators::StatePlex;
   using H = mkfit::mini_propagators::Hermite3D;
   static constexpr auto exact = mkfit::mini_propagators::PA_Exact;
+  static constexpr auto line = mkfit::mini_propagators::PA_Line;
 };
 template <int N>
 struct MiniP<false, N> {
@@ -284,6 +287,7 @@ struct MiniP<false, N> {
   using SP = P::mini_propagators::StatePlex<N>;
   using H = P::mini_propagators::Hermite3D<N>;
   static constexpr auto exact = P::mini_propagators::PA_Exact;
+  static constexpr auto line = P::mini_propagators::PA_Line;
 };
 
 // A mini-propagator state into the outputs: position and momentum as the parameters, dalpha as x1,
@@ -372,6 +376,28 @@ void run(Fn f, const In<N>& in, Out<N>& o, int np, const PropagationFlags& pf) {
       mini_out<N>(sp, ret, o);
       break;
     }
+    case F_MiniPlane:  // the scalar, per-hit propagation, lane by lane
+      for (int n = 0; n < np; ++n) {
+        const SVector3 pos(in.pnt(n, 0, 0), in.pnt(n, 1, 0), in.pnt(n, 2, 0));
+        const SVector3 zdir(in.nrm(n, 0, 0), in.nrm(n, 1, 0), in.nrm(n, 2, 0));
+        auto plane = [&](const auto& is, auto& c) {
+          o.fail[n] = !is.propagate_to_plane(MiniP<LIB, N>::line, pos, zdir, c, true);
+          const float v[6] = {c.x, c.y, c.z, c.px, c.py, c.pz};
+          for (int i = 0; i < 6; ++i)
+            o.par(n, i, 0) = v[i];
+          // c.dalpha is not compared: InitialState's constructor from a Matriplex does not set it
+        };
+        if constexpr (LIB) {
+          mkfit::mini_propagators::InitialState is(in.par, in.chg, n);
+          mkfit::mini_propagators::State c;
+          plane(is, c);
+        } else {
+          P::mini_propagators::InitialState is(in.par, in.chg, n);
+          P::mini_propagators::State c;
+          plane(is, c);
+        }
+      }
+      break;
     default:
       break;
   }
