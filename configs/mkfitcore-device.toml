@@ -19,6 +19,8 @@ undefine = ["DEBUG", "UNUSED"]
 define = []
 strip_calls = ["dprint", "dprint_np", "dprintf", "dprintf_np", "dcall"]
 unqualify = ["mkfit"]
+# source namespaces and where they go under target_namespace
+namespace_map = { "mkfit" = "", "mkfit::mini_propagators" = "mini_propagators" }
 drop_using_namespace = ["mkfit"]
 keep_angle_includes = false   # the prelude includes the device vdt
 localize_globals = true
@@ -117,3 +119,15 @@ src = "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.cc"
 out = "KalmanUtilsMPlexImpl.h"
 includes = ["KalmanUtilsMPlex.h"]
 splice = ["KalmanUtilsMPlex.icc"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/MiniPropagators.h"
+out = "MiniPropagators.h"
+# host-only types (TrackState, SVector3): left out of the device copy
+skip = ["InitialStatePlex::copyIn_partial_track_state", "InitialState::propagate_to_plane"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/MiniPropagators.cc"
+out = "MiniPropagatorsImpl.h"
+includes = ["MiniPropagators.h"]
+skip = ["InitialState::propagate_to_plane"]

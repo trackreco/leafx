@@ -65,6 +65,9 @@ enum Fn {
   F_KPropUpdChi2Plane,
   F_KPropChi2Plane,
   F_KOpPlaneLocal,
+  F_MiniR,
+  F_MiniZ,
+  F_Hermite,
   F_Count
 };
 const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
@@ -78,7 +81,10 @@ const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
                                 "kalmanUpdatePlane",
                                 "kalmanPropagateAndUpdateAndChi2Plane",
                                 "kalmanPropagateAndComputeChi2Plane",
-                                "kalmanOperationPlaneLocal (+detV, chi2Acc)"};
+                                "kalmanOperationPlaneLocal (+detV, chi2Acc)",
+                                "mini_propagators: propagate_to_r",
+                                "mini_propagators: propagate_to_z",
+                                "mini_propagators: Hermite3D, two-point, t = 0.5"};
 
 MKFIT_HOST_DEVICE void run1(int f, const In1& in, Out1& o, const P::PropagationFlags& pf) {
   const int kfo = P::KFO_Update_Params | P::KFO_Calculate_Chi2 | P::KFO_Local_Cov;
@@ -129,6 +135,31 @@ MKFIT_HOST_DEVICE void run1(int f, const In1& in, Out1& o, const P::PropagationF
       P::kalmanOperationPlaneLocal<1>(kfo, in.err, in.par, in.chg, in.mserr, in.mspar, in.nrm, in.dir, in.pnt, o.err,
                                       o.par, o.chi2, 1, nullptr, nullptr, true, &o.x1, &o.x2, 4.0f);
       break;
+    case F_MiniR:
+    case F_MiniZ:
+    case F_Hermite: {
+      namespace MP = P::mini_propagators;
+      MP::InitialStatePlex<1> isp(in.par, in.chg);
+      MP::StatePlex<1> sp;
+      if (f == F_MiniR)
+        isp.propagate_to_r(MP::PA_Exact, in.rad, sp, true, 1);
+      else if (f == F_MiniZ)
+        isp.propagate_to_z(MP::PA_Exact, in.rad, sp, true, 1);
+      else {
+        MP::StatePlex<1> sp2;
+        isp.propagate_to_r(MP::PA_Exact, in.rad, sp2, true, 1);
+        MP::Hermite3D<1> h;
+        h.calculate_coeffs(isp, sp2, isp.inv_k);
+        P::MPlexQF<1> t(0.5f);
+        h.evaluate(t, sp);
+      }
+      const float v[6] = {sp.x[0], sp.y[0], sp.z[0], sp.px[0], sp.py[0], sp.pz[0]};
+      for (int i = 0; i < 6; ++i)
+        o.par(0, i, 0) = v[i];
+      o.x1[0] = sp.dalpha[0];
+      o.fail[0] = sp.fail_flag[0];
+      break;
+    }
   }
 }
 

@@ -11,6 +11,7 @@
 
 #include "RecoTracker/MkFitCore/src/PropagationMPlex.h"  // reference: MkFitCore, NN lanes
 #include "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.h"
+#include "RecoTracker/MkFitCore/src/MiniPropagators.h"
 #include "RecoTracker/MkFitCore/interface/Config.h"
 #include "RecoTracker/MkFitCore/interface/PropagationConfig.h"
 #include "RecoTracker/MkFitCore/interface/TrackerInfo.h"
@@ -245,6 +246,9 @@ enum Fn {
   F_KPropUpdChi2Plane,
   F_KPropChi2Plane,
   F_KOpPlaneLocal,
+  F_MiniR,
+  F_MiniZ,
+  F_Hermite,
   F_Count
 };
 const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
@@ -258,8 +262,44 @@ const char* fn_name[F_Count] = {"propagateHelixToRMPlex",
                                 "kalmanUpdatePlane",
                                 "kalmanPropagateAndUpdateAndChi2Plane",
                                 "kalmanPropagateAndComputeChi2Plane",
-                                "kalmanOperationPlaneLocal (+detV, chi2Acc)"};
-bool fn_forward(int f) { return f == F_Z || f == F_KUpdEndcap || f == F_KChi2Endcap; }
+                                "kalmanOperationPlaneLocal (+detV, chi2Acc)",
+                                "mini_propagators: propagate_to_r",
+                                "mini_propagators: propagate_to_z",
+                                "mini_propagators: Hermite3D, two-point, t = 0.5"};
+bool fn_forward(int f) { return f == F_Z || f == F_KUpdEndcap || f == F_KChi2Endcap || f == F_MiniZ; }
+
+// The mini propagators: MkFitCore's classes (NN lanes) or the copy's class templates.
+template <bool LIB, int N>
+struct MiniP;
+template <int N>
+struct MiniP<true, N> {
+  using ISP = mkfit::mini_propagators::InitialStatePlex;
+  using SP = mkfit::mini_propagators::StatePlex;
+  using H = mkfit::mini_propagators::Hermite3D;
+  static constexpr auto exact = mkfit::mini_propagators::PA_Exact;
+};
+template <int N>
+struct MiniP<false, N> {
+  using ISP = P::mini_propagators::InitialStatePlex<N>;
+  using SP = P::mini_propagators::StatePlex<N>;
+  using H = P::mini_propagators::Hermite3D<N>;
+  static constexpr auto exact = P::mini_propagators::PA_Exact;
+};
+
+// A mini-propagator state into the outputs: position and momentum as the parameters, dalpha as x1,
+// fail_flag as the fail flag. The return value (the number of failed lanes in the batch) depends on
+// the batch, so it is not compared; fail_flag is its per-lane form.
+template <int N, class SP>
+void mini_out(const SP& sp, int ret, Out<N>& o) {
+  for (int n = 0; n < N; ++n) {
+    const float v[6] = {sp.x[n], sp.y[n], sp.z[n], sp.px[n], sp.py[n], sp.pz[n]};
+    for (int i = 0; i < 6; ++i)
+      o.par(n, i, 0) = v[i];
+    o.x1[n] = sp.dalpha[n];
+    o.fail[n] = sp.fail_flag[n];
+  }
+  (void)ret;
+}
 
 // LIB = true: MkFitCore's functions (N = NN only); false: the generated copy.
 template <bool LIB, int N>
@@ -310,6 +350,28 @@ void run(Fn f, const In<N>& in, Out<N>& o, int np, const PropagationFlags& pf) {
       CALL(kalmanOperationPlaneLocal, kfo, in.err, in.par, in.chg, in.mserr, in.mspar, in.nrm, in.dir, in.pnt, o.err,
            o.par, o.chi2, np, nullptr, nullptr, true, &o.x1, &o.x2, 4.0f);
       break;
+    case F_MiniR:
+    case F_MiniZ:
+    case F_Hermite: {
+      using M = MiniP<LIB, N>;
+      typename M::ISP isp(in.par, in.chg);
+      typename M::SP sp;
+      int ret = 0;
+      if (f == F_MiniR)
+        ret = isp.propagate_to_r(M::exact, in.rad, sp, true, np);
+      else if (f == F_MiniZ)
+        ret = isp.propagate_to_z(M::exact, in.rad, sp, true, np);
+      else {
+        typename M::SP sp2;
+        isp.propagate_to_r(M::exact, in.rad, sp2, true, np);
+        typename M::H h;
+        h.calculate_coeffs(isp, sp2, isp.inv_k);
+        P::MPlexQF<N> t(0.5f);
+        h.evaluate(t, sp);
+      }
+      mini_out<N>(sp, ret, o);
+      break;
+    }
     default:
       break;
   }

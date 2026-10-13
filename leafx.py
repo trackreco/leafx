@@ -447,6 +447,10 @@ class FileXform:
         self.strip_calls = set(cfg.get("strip_calls", []))
         self.drop_usings = set(cfg.get("drop_using_namespace", ["mkfit"]))
         self.skip_symbols = set(fcfg.get("skip", []))
+        self.host_only = set(fcfg.get("host_only", []))
+        # shared between files: types templated on N (Matriplex typedefs, aliases, classes), and per class
+        # its members and bases (set by main)
+        self.registry = None
         self.size_marks = {}  # line -> expr
 
         with open(self.src) as fh:
@@ -681,7 +685,7 @@ class FileXform:
         for k in words:
             if T[k].text == "static":
                 edits.append((T[k].start, T[k].end + (1 if T[k + 1].kind == "ws" else 0), ""))
-        ins = self.annot + " "
+        ins = "" if it.name.split("::")[-1] in self.host_only else self.annot + " "
         if not templated and not has_inline and it.kind == "func":
             ins += "inline "
         edits.append((T[spec].start, T[spec].start, ins))
@@ -729,6 +733,8 @@ class FileXform:
             self.rewrite_span(it.start, it.end, types, templated, in_detail, edits, it.name, protected)
             if it.body is not None:
                 self.vla_fix(it.body, edits, it.name, self.params_of(it))
+                if "::" in it.name and it.name.split("::")[-2] in self.registry["templated"]:
+                    self.this_rewrite(it.body[0], it.body[1], it.name.split("::")[-2], self.params_of(it), edits)
                 used = sorted({T[k].text for k in self.p.sig(it.body[0], it.body[1])
                                if T[k].kind == "id" and T[k].text in self.local_globals})
                 if used:
@@ -740,7 +746,10 @@ class FileXform:
                     edits.append((T[it.body[0]].end, T[it.body[0]].end, decl))
             return self.render(it.start, it.end, edits), templated
         if it.kind == "alias":
-            self.rewrite_span(it.start, it.end, types, None, in_detail, edits, it.name or "alias")
+            # the alias's own name is a declarator, not a use
+            sig = self.p.sig(it.start, it.end)
+            own = {sig[n + 1] for n, k in enumerate(sig[:-1]) if T[k].text == "using" and T[sig[n + 1]].text == it.name}
+            self.rewrite_span(it.start, it.end, types, None, in_detail, edits, it.name or "alias", own)
             txt = self.render(it.start, it.end, edits)
             if self.uses_mplex(it.start, it.end, types):
                 txt = f"template <int {self.lane}>\n" + txt
@@ -754,12 +763,22 @@ class FileXform:
             prev_end = it.end
             if it.kind == "ns":
                 raise RuntimeError(f"{self.src_rel}:{self.line(it.start)}: nested namespace inside a mapped one")
-            if it.kind in ("func", "decl") and (it.name in self.skip_symbols or "skip" in marks):
+            if it.kind in ("func", "decl") and (self.skipped(it.name) or "skip" in marks):
                 self.report.note(self.src_rel, self.line(it.start), f"skipped {it.name} (markup / config)")
                 continue
             if it.kind == "other":
                 words = [self.toks[k].text for k in self.p.sig(it.start, it.end)]
                 if words[:2] == ["using", "namespace"] and words[2] in self.drop_usings:
+                    continue
+                if len(words) == 3 and words[0] in ("class", "struct") and words[1] in self.registry["members"]:
+                    tmpl = f"template <int {self.lane}>\n" if words[1] in self.registry["templated"] else ""
+                    out.append(f"{tmpl}{words[0]} {words[1]};\n")
+                    continue
+                if "constexpr" in words and not any(w in types for w in words):
+                    # namespace-scope constexpr scalars are usable in device code as they are
+                    e = []
+                    self.rewrite_span(it.start, it.end, types, None, in_detail, e, "constexpr")
+                    out.append(f"// leafx: {self.src_rel}:{self.line(it.start)}\n{self.render(it.start, it.end, e)}\n")
                     continue
                 g = self.global_matriplex(it, types)
                 if g:
@@ -773,7 +792,7 @@ class FileXform:
                 if words and words[0] == "enum":
                     out.append(f"// leafx: {self.src_rel}:{self.line(it.start)}\n{self.render(it.start, it.end, [])}\n")
                     continue
-                self.report.error(self.src_rel, self.line(it.start), f"class {it.name}: not handled in leaf mode")
+                out.append(f"// leafx: {self.src_rel}:{self.line(it.start)}\n{self.class_text(it, types, in_detail)}\n")
                 continue
             txt, templ = self.item_text(it, types, in_detail)
             if txt is None:
@@ -782,6 +801,112 @@ class FileXform:
                 types.add(it.name)
             out.append(f"// leafx: {self.src_rel}:{self.line(it.start)}\n{txt}\n")
         return prev_end
+
+    def skipped(self, name, cls=None):
+        """`skip` entries name a function, a member (any class), or Class::member."""
+        short = name.split("::")[-1]
+        full = name if "::" in name else (f"{cls}::{name}" if cls else name)
+        return name in self.skip_symbols or short in self.skip_symbols or full in self.skip_symbols
+
+    # ---- classes ----------------------------------------------------------
+
+    def scan_types(self, items, types, registry):
+        """Pre-pass over a file: Matriplex aliases join `types`; classes are recorded with their members
+        and bases, and a class with a data member of a type in `types` becomes a template on N."""
+        T = self.toks
+        for it in items:
+            if it.kind == "ns":
+                self.scan_types(it.children, types, registry)
+            elif it.kind == "alias" and it.name and self.uses_mplex(it.start, it.end, types):
+                types.add(it.name)
+            elif it.kind == "class" and it.name:
+                head = [T[k].text for k in self.p._skip_template_headers(self.p.sig(it.start, it.open))]
+                if not head or head[0] == "enum":
+                    continue
+                members, templ = set(), False
+                for c in it.children:
+                    if c.kind in ("func", "decl"):
+                        members.add(c.name)
+                    elif c.kind == "other":
+                        sig = self.p.sig(c.start, c.end)
+                        if any(T[k].kind == "id" and T[k].text in types for k in sig):
+                            templ = True
+                        for n, k in enumerate(sig[:-1]):
+                            if T[k].kind == "id" and T[sig[n + 1]].text in (",", ";", "{", "=", "["):
+                                members.add(T[k].text)
+                bases = set()
+                if ":" in head:
+                    bases = {w for w in head[head.index(":") + 1:]
+                             if re.match(r"\w+$", w) and w not in ("public", "private", "protected", "virtual")}
+                if bases & registry["templated"]:
+                    templ = True
+                registry["members"][it.name] = members
+                registry["bases"][it.name] = bases
+                if templ and it.name not in registry["templated"]:
+                    registry["templated"].add(it.name)
+                    types.add(it.name)
+
+    def base_members(self, cls):
+        """Members of the templated bases of `cls`, recursively."""
+        reg, res = self.registry, set()
+        for b in reg["bases"].get(cls, ()):
+            if b in reg["templated"]:
+                res |= reg["members"].get(b, set()) | self.base_members(b)
+        return res
+
+    def this_rewrite(self, a, b, cls, params, edits):
+        """In a body of a class derived from a templated base: base members used unqualified get `this->`
+        (a dependent base is not searched by unqualified lookup)."""
+        names = self.base_members(cls) - self.registry["members"].get(cls, set()) - params
+        if not names:
+            return
+        T = self.toks
+        sig = self.p.sig(a, b)
+        for n, k in enumerate(sig):
+            t = T[k]
+            if t.kind != "id" or t.text not in names:
+                continue
+            prev = T[sig[n - 1]].text if n > 0 else ""
+            if prev in (".", "->", "::"):
+                continue
+            edits.append((t.start, t.start, "this->"))
+
+    def class_text(self, it, types, in_detail):
+        T = self.toks
+        reg = self.registry
+        name = it.name
+        templ = name in reg["templated"]
+        edits, protected = [], set()
+        if templ:
+            edits.append((T[it.start].start, T[it.start].start, f"template <int {self.lane}>\n"))
+            for k in self.p.sig(it.start, it.open):
+                if T[k].text == name:
+                    protected.add(k)
+                    break
+        prev_end = it.open + 1
+        for c in it.children:
+            marks = self.preceding_marks(c, prev_end)
+            prev_end = c.end
+            if c.kind not in ("func", "decl"):
+                continue
+            short = c.name.split("::")[-1]
+            if self.skipped(short, name) or "skip" in marks:
+                edits.append((T[c.start].start, T[c.end - 1].end, f"// leafx: {name}::{short} skipped"))
+                self.report.note(self.src_rel, T[c.start].line, f"skipped {name}::{short} (markup / config)")
+                continue
+            if short == name:
+                protected.add(c.name_tok)  # a constructor
+            tail = [T[k].text for k in self.p.sig(self.p.match[c.paren], c.end)]
+            if not templ and self.uses_mplex(c.start, self.p.match[c.paren] + 1, types):
+                edits.append((T[c.start].start, T[c.start].start, f"template <int {self.lane}>\n"))
+            if short in self.host_only:
+                self.report.note(self.src_rel, T[c.start].line, f"{name}::{short}: host only, not annotated")
+            elif "default" not in tail and "delete" not in tail:
+                edits.append((T[c.spec_start].start, T[c.spec_start].start, self.annot + " "))
+            if templ and c.body is not None:
+                self.this_rewrite(c.body[0], c.body[1], name, self.params_of(c), edits)
+        self.rewrite_span(it.start, it.end, types, True, in_detail, edits, name, protected)
+        return self.render(it.start, it.end, edits)
 
     def global_matriplex(self, it, types):
         """(name, type) if statement `it` declares a namespace-scope variable of a Matriplex type."""
@@ -827,7 +952,7 @@ class FileXform:
 
     def generate(self):
         out = []
-        types = set(self.mplex_types)
+        types = set(self.mplex_types) | self.registry["types"]
         self.collect_globals(self.items, types)
         self.collect_nondeducible(self.items, types)
         # names of the anonymous namespaces and of file-scope functions (e.g. from a spliced .icc):
@@ -1262,10 +1387,20 @@ def main():
         fx = FileXform(cfg, fcfg, mplex_types, api, report)
         files.append(fx)
         for it in fx.items:
-            if it.kind == "ns" and it.name == "mkfit":
+            if it.kind == "ns" and it.name in cfg.get("namespace_map", {"mkfit": ""}):
                 for c in it.children:
-                    if c.kind in ("func", "decl") and c.name not in fx.skip_symbols:
+                    if c.kind in ("func", "decl") and c.name not in fx.skip_symbols and "::" not in c.name:
                         api.add(c.name)
+
+    # ---- pass 1b: types templated on N, over all files (aliases, classes with Matriplex members) ----
+    registry = {"types": set(mplex_types), "templated": set(), "members": {}, "bases": {}}
+    for _ in range(3):  # to a fixed point: a class can depend on one defined later
+        for fx in files:
+            fx.scan_types(fx.items, registry["types"], registry)
+    for fx in files:
+        fx.registry = registry
+    if registry["templated"]:
+        print(f"classes templated on {lane}: {', '.join(sorted(registry['templated']))}")
 
     # ---- pass 2: generate ----
     outputs = []

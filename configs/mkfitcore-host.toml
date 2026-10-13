@@ -21,6 +21,8 @@ define = []
 strip_calls = ["dprint", "dprint_np", "dprintf", "dprintf_np", "dcall"]
 # `mkfit::X` written as `X`, so that a declaration in the target namespace can shadow it
 unqualify = ["mkfit"]
+# source namespaces and where they go under target_namespace
+namespace_map = { "mkfit" = "", "mkfit::mini_propagators" = "mini_propagators" }
 drop_using_namespace = ["mkfit"]
 # the source files' own `#include <...>` (vdt): kept on the host; a device build supplies its own
 keep_angle_includes = true
@@ -37,6 +39,7 @@ prelude_includes = [
   "RecoTracker/MkFitCore/interface/MathInlineCore.h",
   "RecoTracker/MkFitCore/interface/cms_common_macros.h",
   "RecoTracker/MkFitCore/interface/FunctionTypes.h",
+  "RecoTracker/MkFitCore/interface/TrackState.h",  # MiniPropagators: TrackState, SVector3
   "FWCore/Utilities/interface/CMSUnrollLoop.h",
 ]
 
@@ -78,3 +81,12 @@ src = "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.cc"
 out = "KalmanUtilsMPlexImpl.h"
 includes = ["KalmanUtilsMPlex.h"]
 splice = ["KalmanUtilsMPlex.icc"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/MiniPropagators.h"
+out = "MiniPropagators.h"
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/MiniPropagators.cc"
+out = "MiniPropagatorsImpl.h"
+includes = ["MiniPropagators.h"]

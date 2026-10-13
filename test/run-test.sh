@@ -48,7 +48,7 @@ CXXFLAGS="$OPT -std=c++20 -pthread -Wall -Wno-unused-parameter -Wno-unused-local
 
 REFSRC=""
 if [ $MODE != ofast ]; then
-  for f in PropagationMPlex PropagationMPlexCommon PropagationMPlexEndcap PropagationMPlexPlane KalmanUtilsMPlex; do
+  for f in PropagationMPlex PropagationMPlexCommon PropagationMPlexEndcap PropagationMPlexPlane KalmanUtilsMPlex MiniPropagators; do
     REFSRC="$REFSRC $CMSSW_SRC/RecoTracker/MkFitCore/src/$f.cc"
   done
 fi
