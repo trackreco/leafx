@@ -114,7 +114,7 @@ The copy refers to MkFitCore's names unqualified, from inside `mkfit::portable`:
 
 `leafx_report.txt` lists every such name, with its use count. The device configuration includes
 `leafx-device-prelude.h`, written by the consumer. `test/gpu/leafx-device-prelude.h` is a working
-example of about 110 lines:
+example of about 100 lines:
 - it includes the generated Matriplex and vdt, and defines `MPLEX_VDT` as MkFitCore's `Matrix.h` does;
 - it takes the `constexpr` `Config::` and `Const::` from MkFitCore's `Config.h`;
 - it fixes `Config::usePtMultScat`, which MkFitCore sets at run time; the GPU test checks the value
