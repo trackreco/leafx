@@ -2,10 +2,12 @@
 // instantiated with N = NN and with N = 1, on random tracks, with the parametrised field and the
 // phase-2 material map. Compares every output float bitwise.
 //
-//   test_leaf GEOMETRY_FILE [N_BATCHES] [strict]
+//   test_leaf GEOMETRY_FILE [N_BATCHES] [strict] [dump=FILE]
 //
 // With `strict` the exit status is 1 on any difference (meaningful only when the reference and the copy
-// are compiled without fast math).
+// are compiled without fast math). With `dump=FILE` it writes, for the GPU test (test/gpu/), the
+// material map, the runtime Config values, and per function the inputs of every track and the
+// outputs of the generated copy at N = 1.
 
 #include "RecoTracker/MkFitCore/src/PropagationMPlex.h"  // reference: MkFitCore, NN lanes
 #include "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.h"
@@ -20,6 +22,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <vector>
 
 using namespace mkfit;
 namespace P = mkfit::portable;
@@ -48,6 +51,21 @@ struct In {
     copy(b.dir, n, dir);
     copy(b.mserr, n, mserr);
     copy(b.mspar, n, mspar);
+  }
+  void write(FILE* f) const {
+    w(f, err);
+    w(f, par);
+    w(f, chg);
+    w(f, rad);
+    w(f, pnt);
+    w(f, nrm);
+    w(f, dir);
+    w(f, mserr);
+    w(f, mspar);
+  }
+  template <class M>
+  static void w(FILE* f, const M& m) {
+    fwrite(m.fArray, sizeof(m.fArray[0]), M::kTotSize, f);
   }
   template <class Big, class Small>
   static void copy(const Big& b, int n, Small& s) {
@@ -82,6 +100,15 @@ struct Out {
     copy(chi2, b.chi2, n);
     copy(x1, b.x1, n);
     copy(x2, b.x2, n);
+  }
+  void write(FILE* f) const {
+    In<N>::w(f, err);
+    In<N>::w(f, par);
+    In<N>::w(f, fail);
+    In<N>::w(f, chg);
+    In<N>::w(f, chi2);
+    In<N>::w(f, x1);
+    In<N>::w(f, x2);
   }
   template <class Small, class Big>
   static void copy(const Small& s, Big& b, int n) {
@@ -292,7 +319,16 @@ void run(Fn f, const In<N>& in, Out<N>& o, int np, const PropagationFlags& pf) {
 int main(int argc, char* argv[]) {
   const std::string geom = argc > 1 ? argv[1] : "CMS-phase2.bin";
   const int n_batches = argc > 2 ? std::atoi(argv[2]) : 2000;
-  const bool strict = argc > 3 && std::string(argv[3]) == "strict";
+  bool strict = false;
+  std::string dump_file;
+  for (int a = 3; a < argc; ++a) {
+    const std::string arg = argv[a];
+    if (arg == "strict")
+      strict = true;
+    else if (arg.rfind("dump=", 0) == 0)
+      dump_file = arg.substr(5);
+  }
+  FILE* dump = dump_file.empty() ? nullptr : fopen(dump_file.c_str(), "wb");
 
   TrackerInfo ti;
   ti.read_bin_file(geom);
@@ -301,12 +337,36 @@ int main(int argc, char* argv[]) {
   pf.tracker_info = &ti;
   printf("geometry %s, material bins %d x %d; %d batches of %d tracks per function\n", geom.c_str(),
          ti.mat_nbins_z(), ti.mat_nbins_r(), n_batches, NN);
+  if (dump) {
+    // header: magic, number of functions; Config; the material map
+    const int head[2] = {0x6c656166, F_Count};
+    fwrite(head, sizeof(int), 2, dump);
+#ifdef MKFIT_STANDALONE
+    const float cfgv[4] = {float(Config::usePtMultScat), Config::matScale, Config::matElossVarScale,
+                           Config::matScaleFwdPix};
+#else
+    const float cfgv[4] = {float(Config::usePtMultScat), Config::matScale, Config::matElossVarScale, 1.f};
+#endif
+    fwrite(cfgv, sizeof(float), 4, dump);
+    const int nz = ti.mat_nbins_z(), nr = ti.mat_nbins_r();
+    const float fac[2] = {nz / ti.mat_range_z(), nr / ti.mat_range_r()};
+    fwrite(&nz, sizeof(int), 1, dump);
+    fwrite(&nr, sizeof(int), 1, dump);
+    fwrite(fac, sizeof(float), 2, dump);
+    for (int iz = 0; iz < nz; ++iz)
+      for (int ir = 0; ir < nr; ++ir) {
+        const float m[2] = {ti.material_bbxi(iz, ir), ti.material_radl(iz, ir)};
+        fwrite(m, sizeof(float), 2, dump);
+      }
+  }
 
   int status = 0;
   for (int f = 0; f < F_Count; ++f) {
     Gen gen(12345 + f);
     Cmp c8, c1, c18;
     long n_failed = 0;
+    std::vector<In<1>> d_in;
+    std::vector<Out<1>> d_out;
     for (int b = 0; b < n_batches; ++b) {
       In<NN> in;
       gen.fill(in, fn_forward(f));
@@ -324,6 +384,10 @@ int main(int argc, char* argv[]) {
         o1.zero(i1.chg);
         run<false>(Fn(f), i1, o1, 1, pf);
         o1.lane_to(g1, n);
+        if (dump) {
+          d_in.push_back(i1);
+          d_out.push_back(o1);
+        }
       }
       for (int n = 0; n < np; ++n)
         n_failed += lib.fail.constAt(n, 0, 0) != 0;
@@ -331,11 +395,23 @@ int main(int argc, char* argv[]) {
       c1.add(lib, g1, np);
       c18.add(g8, g1, np);
     }
+    if (dump) {
+      const int nt[2] = {f, int(d_in.size())};
+      fwrite(nt, sizeof(int), 2, dump);
+      for (size_t t = 0; t < d_in.size(); ++t) {
+        d_in[t].write(dump);
+        d_out[t].write(dump);
+      }
+    }
     printf("%s (failed for %ld tracks)\n", fn_name[f], n_failed);
     c8.print("generated N=NN vs MkFitCore");
     c1.print("generated N=1  vs MkFitCore");
     if (strict && (c8.n_diff || c8.n_int_diff || c1.n_diff || c1.n_int_diff))
       status = 1;
+  }
+  if (dump) {
+    fclose(dump);
+    printf("dumped to %s\n", dump_file.c_str());
   }
   return status;
 }

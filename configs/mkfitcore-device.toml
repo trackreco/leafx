@@ -1,0 +1,119 @@
+# leafx config: MkFitCore's propagation and Kalman update, with the Matriplex and vdt they need,
+# generated for a DEVICE build (CUDA / HIP / Alpaka): every function is host/device.
+#
+# The source tree comes from --source-root or $LEAFX_SOURCE_ROOT; vdt from $LEAFX_VDT_ROOT, the
+# directory that contains vdt/ (in CMSSW: the vdt external's include directory).
+#
+# The consumer provides leafx-device-prelude.h (see test/gpu/ for an example). It includes the
+# generated Matriplex and vdt and declares, in mkfit::portable, the names listed under EXTERNAL NAMES
+# in leafx_report.txt that MkFitCore only has as host code.
+
+clang_format_style = ".clang-format"
+include_paths = ["."]
+
+target_namespace = "mkfit::portable"
+annotation = "MKFIT_HOST_DEVICE"
+lane_param = "N"
+lane_constant = "NN"
+undefine = ["DEBUG", "UNUSED"]
+define = []
+strip_calls = ["dprint", "dprint_np", "dprintf", "dprintf_np", "dcall"]
+unqualify = ["mkfit"]
+drop_using_namespace = ["mkfit"]
+keep_angle_includes = false   # the prelude includes the device vdt
+localize_globals = true
+mplex_typedefs = ["RecoTracker/MkFitCore/src/Matrix.h"]
+prelude_includes = ["leafx-device-prelude.h"]
+
+# ---- whole headers, every function annotated, namespaces moved under mkfit::portable ----
+
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/vdtcore_common.h"
+out = "vdt/vdtcore_common.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/sincos.h"
+out = "vdt/sincos.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/sin.h"
+out = "vdt/sin.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/cos.h"
+out = "vdt/cos.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/tan.h"
+out = "vdt/tan.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/atan.h"
+out = "vdt/atan.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/atan2.h"
+out = "vdt/atan2.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/sqrt.h"
+out = "vdt/sqrt.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+[[library]]
+source_root = "$LEAFX_VDT_ROOT"
+src = "vdt/log.h"
+out = "vdt/log.h"
+namespace_map = { vdt = "mkfit::portable::vdt" }
+
+[[library]]
+src = "RecoTracker/MkFitCore/src/Matriplex/MatriplexCommon.h"
+out = "Matriplex/MatriplexCommon.h"
+namespace_map = { Matriplex = "mkfit::portable::Matriplex" }
+host_only = ["align_check"]
+[[library]]
+src = "RecoTracker/MkFitCore/src/Matriplex/Matriplex.h"
+out = "Matriplex/Matriplex.h"
+namespace_map = { Matriplex = "mkfit::portable::Matriplex" }
+[[library]]
+src = "RecoTracker/MkFitCore/src/Matriplex/MatriplexSym.h"
+out = "Matriplex/MatriplexSym.h"
+namespace_map = { Matriplex = "mkfit::portable::Matriplex" }
+
+# ---- the leaf code, as in mkfitcore-host.toml ----
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlex.h"
+out = "PropagationMPlex.h"
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlexCommon.cc"
+out = "PropagationMPlexCommon.h"
+includes = ["PropagationMPlex.h"]
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlex.cc"
+out = "PropagationMPlexBarrel.h"
+includes = ["PropagationMPlex.h"]
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlexEndcap.cc"
+out = "PropagationMPlexEndcap.h"
+includes = ["PropagationMPlex.h"]
+[[file]]
+src = "RecoTracker/MkFitCore/src/PropagationMPlexPlane.cc"
+out = "PropagationMPlexPlane.h"
+includes = ["PropagationMPlex.h"]
+[[file]]
+src = "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.h"
+out = "KalmanUtilsMPlex.h"
+includes = ["PropagationMPlex.h"]
+[[file]]
+src = "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.cc"
+out = "KalmanUtilsMPlexImpl.h"
+includes = ["KalmanUtilsMPlex.h"]
+splice = ["KalmanUtilsMPlex.icc"]

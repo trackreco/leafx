@@ -345,6 +345,20 @@ class Parser:
             return None
         if self.t[idxs[0]].text in ("using", "typedef", "return", "static_assert"):
             return None
+        # operator functions first: their names can contain '=', '(' and ')'
+        texts = [self.t[k].text for k in idxs]
+        if "operator" in texts:
+            o = texts.index("operator")
+            j = o + 1
+            if j + 1 < len(idxs) and texts[j] == "(" and texts[j + 1] == ")":
+                j += 2  # operator()
+            else:
+                while j < len(idxs) and texts[j] != "(":
+                    j += 1  # operator+=, operator[], operator T, ...
+            if j < len(idxs) and texts[j] == "(":
+                name = "operator" + "".join(texts[o + 1:j])
+                return dict(name=name, paren=idxs[j], name_tok=idxs[o], spec_start=idxs[0])
+            return None
         for n, k in enumerate(idxs):
             tk = self.t[k]
             if tk.text == "=" and tk.kind == "p":
@@ -862,6 +876,139 @@ class FileXform:
 
 
 # =============================================================================
+# Library mode: a whole header made callable from device code (Matriplex, vdt)
+# =============================================================================
+
+
+class LibraryXform:
+    """Copies a header whole, annotating every function (free and member) with the host/device
+    annotation, moving its namespaces under the target namespace, and renaming its include guard.
+    Includes of other library files keep their relative form (the copies sit side by side); matrix
+    kernels (.ah) get the lane-guarded copy."""
+
+    def __init__(self, cfg, lcfg, report):
+        self.cfg, self.lcfg, self.report = cfg, lcfg, report
+        root = lcfg.get("source_root", cfg["source_root"])
+        self.src_rel = lcfg["src"]
+        self.src = os.path.join(root, self.src_rel)
+        self.annot = cfg.get("annotation", "MKFIT_HOST_DEVICE")
+        self.host_only = set(lcfg.get("host_only", []))
+        self.ns_map = lcfg.get("namespace_map", {})
+        self.kernels = set()
+        with open(self.src) as fh:
+            self.text = fh.read()
+        self.toks = tokenize(self.text)
+        self.p = Parser(self.toks)
+        self.items = self.p.parse(0, len(self.toks), "file")
+
+    def generate(self, guard_prefix):
+        edits = []
+        n_annot = [0]
+
+        def walk(items):
+            for it in items:
+                if it.kind in ("ns", "class"):
+                    if it.kind == "ns" and it.name in self.ns_map:
+                        # `namespace X {` -> `namespace TARGET::X {`
+                        edits.append((self.toks[it.start].start, self.toks[it.open].start,
+                                      f"namespace {self.ns_map[it.name]} "))
+                    walk(it.children)
+                elif it.kind == "other":
+                    # a namespace-scope constant table: `const T name[...] = {...};`
+                    sig = self.p.sig(it.start, it.end)
+                    words = [self.toks[k].text for k in sig]
+                    if "const" in words[:3] and "[" in words and "=" in words and "(" not in words[:words.index("=")]:
+                        c = self.cfg.get("device_const", "MKFIT_DEVICE_CONST")
+                        edits.append((self.toks[it.start].start, self.toks[it.start].start, c + " "))
+                        self.report.note(self.src_rel, self.toks[it.start].line,
+                                         f"constant table {words[words.index('[') - 1]}: {c}")
+                elif it.kind in ("func", "decl"):
+                    if it.name in self.host_only or it.name.split("::")[-1] in self.host_only:
+                        self.report.note(self.src_rel, self.toks[it.start].line, f"{it.name}: host only, not annotated")
+                        continue
+                    words = {self.toks[k].text for k in self.p.sig(it.spec_start, it.name_tok)}
+                    if self.annot in words or "__host__" in words or "__device__" in words:
+                        continue
+                    if it.kind == "decl":  # `= default` / `= delete`: implicitly host/device, no annotation
+                        tail = [self.toks[k].text for k in self.p.sig(self.p.match[it.paren], it.end)]
+                        if "default" in tail or "delete" in tail:
+                            continue
+                    edits.append((self.toks[it.spec_start].start, self.toks[it.spec_start].start, self.annot + " "))
+                    n_annot[0] += 1
+        walk(self.items)
+
+        # `#ifdef MPLEX_INTRINSICS` inside a function body: under `if constexpr` on the lane count,
+        # as in the matrix kernels (the intrinsics step a whole vector of lanes)
+        bodies = []
+
+        def collect_bodies(items):
+            for it in items:
+                if it.kind in ("ns", "class"):
+                    collect_bodies(it.children)
+                elif it.kind == "func":
+                    bodies.append((self.toks[it.body[0]].start, self.toks[it.body[1]].end, it))
+        collect_bodies(self.items)
+        intr = self.cfg.get("intrinsics_macro", "MPLEX_INTRINSICS")
+        width = self.cfg.get("intrinsics_width", "MPLEX_INTRINSICS_WIDTH_BYTES / sizeof(T)")
+        lane = self.lcfg.get("lane_param", "N")
+        pp_all = [t for t in self.toks if t.kind == "pp"]
+        for i, t in enumerate(pp_all):
+            if not re.match(r"\s*#\s*ifdef\s+" + intr + r"\s*$", t.text):
+                continue
+            if not any(a <= t.start < b for a, b, _ in bodies):
+                continue
+            depth, i_else, i_end = 0, None, None
+            for j in range(i, len(pp_all)):
+                d = DIRECTIVE_RE.match(pp_all[j].text)
+                if not d:
+                    continue
+                if d.group(1) in ("if", "ifdef", "ifndef"):
+                    depth += 1
+                elif d.group(1) == "else" and depth == 1:
+                    i_else = j
+                elif d.group(1) == "endif":
+                    depth -= 1
+                    if depth == 0:
+                        i_end = j
+                        break
+            guard = f"if constexpr ({lane} % ({width}) == 0) {{"
+            edits.append((t.start, t.end, f"#ifdef {intr}\n{guard}"))
+            if i_else is None:
+                edits.append((pp_all[i_end].start, pp_all[i_end].end, "}\n#endif"))
+            else:
+                edits.append((pp_all[i_else].start, pp_all[i_else].end, "} else\n#endif\n{"))
+                edits.append((pp_all[i_end].start, pp_all[i_end].end, "}"))
+            self.report.note(self.src_rel, t.line, f"#ifdef {intr} in a function body: under if constexpr on {lane}")
+
+        # the include guard: the first `#ifndef X` directly followed by `#define X`
+        pps = [t for t in self.toks if t.kind == "pp"]
+        for a, b in zip(pps, pps[1:]):
+            ma = re.match(r"\s*#\s*ifndef\s+(\w+)", a.text)
+            mb = re.match(r"\s*#\s*define\s+(\w+)\s*$", b.text)
+            if ma and mb and ma.group(1) == mb.group(1):
+                g = ma.group(1)
+                edits.append((a.start, a.end, a.text.replace(g, guard_prefix + g)))
+                edits.append((b.start, b.end, b.text.replace(g, guard_prefix + g)))
+                break
+        # in-file includes of matrix kernels
+        for t in pps:
+            m = re.match(r'\s*#\s*include\s*"([^"/]+\.ah)"', t.text)
+            if m:
+                self.kernels.add(os.path.join(os.path.dirname(self.src), m.group(1)))
+        edits.sort(key=lambda e: (e[0], e[1]))
+        out, pos = [], 0
+        for a, b, txt in edits:
+            if a < pos:
+                continue
+            out.append(self.text[pos:a])
+            out.append(txt)
+            pos = b
+        out.append(self.text[pos:])
+        self.report.note(self.src_rel, 1, f"library: {n_annot[0]} functions annotated")
+        return "".join(out)
+
+
+# =============================================================================
 # Driver
 # =============================================================================
 
@@ -901,6 +1048,16 @@ def transform_kernel(text, lane, intr_macro, width_expr):
             lines[i_else] = "} else\n#endif\n{"
             lines[i_if] = f"#ifdef {intr_macro}\n{guard}"
     return "\n".join(lines)
+
+
+def annotation_block(cfg):
+    a = cfg.get("annotation", "MKFIT_HOST_DEVICE")
+    c = cfg.get("device_const", "MKFIT_DEVICE_CONST")
+    return (f"#ifndef {a}\n#if defined(__CUDACC__) || defined(__HIPCC__)\n#define {a} __host__ __device__\n"
+            f"#else\n#define {a}\n#endif\n#endif\n"
+            f"// namespace-scope constant tables: in device memory in the device compilation pass\n"
+            f"#ifndef {c}\n#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)\n#define {c} __device__\n"
+            f"#else\n#define {c}\n#endif\n#endif\n")
 
 
 def mplex_typedefs(path, lane_const):
@@ -1035,6 +1192,11 @@ def main():
     cfg["source_root"] = os.path.abspath(root)
     cfg["include_paths"] = [os.path.join(cfg["source_root"], p) for p in cfg.get("include_paths", ["."])] + \
         [os.path.abspath(p) for p in args.includes]
+    for lcfg in cfg.get("library", []):
+        if "source_root" in lcfg:
+            lcfg["source_root"] = os.path.expandvars(lcfg["source_root"])
+            if not os.path.isabs(lcfg["source_root"]):
+                lcfg["source_root"] = os.path.join(cfg["source_root"], lcfg["source_root"])
     if cfg.get("clang_format_style"):
         cfg["clang_format_style"] = os.path.join(cfg["source_root"], cfg["clang_format_style"])
     os.makedirs(args.outdir, exist_ok=True)
@@ -1045,28 +1207,53 @@ def main():
     guard_pref = cfg.get("guard_prefix", "LEAFX_GENERATED_")
 
     # ---- the Matriplex type aliases ----
-    tdefs = []
+    tdefs, consts = [], []
     for rel in cfg["mplex_typedefs"]:
         tdefs += mplex_typedefs(os.path.join(cfg["source_root"], rel), lane_const)
+        # the dimension constants the typedefs use (`constexpr Matriplex::idx_t LL = 6;`), not the lane count
+        with open(os.path.join(cfg["source_root"], rel)) as fh:
+            for m in re.finditer(r"constexpr\s+([\w:]+)\s+(\w+)\s*=\s*([^;]+);", fh.read()):
+                if m.group(2) != lane_const and "MPT_SIZE" not in m.group(3):
+                    consts.append(m.groups())
     mplex_types = [t[0] for t in tdefs]
     types_h = os.path.join(args.outdir, "leafx_types.h")
     with open(types_h, "w") as fh:
         fh.write(stamp(cfg, cfg["mplex_typedefs"]))
         fh.write(f"#ifndef {guard_pref}leafx_types_h\n#define {guard_pref}leafx_types_h\n\n")
+        fh.write(annotation_block(cfg) + "\n")
         for inc in cfg.get("prelude_includes", []):
             fh.write(f'#include "{inc}"\n')
-        fh.write(f"\n#ifndef {cfg.get('annotation', 'MKFIT_HOST_DEVICE')}\n"
-                 f"#if defined(__CUDACC__) || defined(__HIPCC__)\n"
-                 f"#define {cfg.get('annotation', 'MKFIT_HOST_DEVICE')} __host__ __device__\n#else\n"
-                 f"#define {cfg.get('annotation', 'MKFIT_HOST_DEVICE')}\n#endif\n#endif\n\n")
+        fh.write("\n")
         fh.write(f"namespace {target} {{\n\n")
         fh.write("  // A non-deduced context: a pointer parameter to a Matriplex does not take part in the\n"
                  "  // deduction of the lane count, so that a nullptr argument works.\n"
                  "  template <class T>\n  struct leafx_id {\n    using type = T;\n  };\n"
                  "  template <class T>\n  using leafx_nd = typename leafx_id<T>::type;\n\n")
+        for typ, name, val in consts:
+            fh.write(f"  constexpr {typ} {name} = {val};\n")
+        if consts:
+            fh.write("\n")
         for name, cls, tparams in tdefs:
             fh.write(f"  template <int {lane}>\n  using {name} = {cls}<{tparams}, {lane}>;\n")
         fh.write(f"\n}}  // namespace {target}\n\n#endif\n")
+
+    # ---- library copies (Matriplex, vdt for device code) ----
+    for lcfg in cfg.get("library", []):
+        lx = LibraryXform(cfg, lcfg, report)
+        text = lx.generate(guard_pref)
+        out = os.path.join(args.outdir, lcfg["out"])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as fh:
+            fh.write(stamp(dict(cfg, source_root=lcfg.get("source_root", cfg["source_root"])), [lx.src_rel]) +
+                     annotation_block(cfg) + text)
+        for k in sorted(lx.kernels):
+            with open(k) as fh:
+                ktext = transform_kernel(fh.read(), lane, cfg.get("intrinsics_macro", "MPLEX_INTRINSICS"),
+                                         cfg.get("intrinsics_width", "MPLEX_INTRINSICS_WIDTH_BYTES / sizeof(T)"))
+            with open(os.path.join(os.path.dirname(out), os.path.basename(k)), "w") as fh:
+                fh.write(f"// GENERATED by leafx {VERSION} from {k} -- do not edit.\n" + ktext)
+    if cfg.get("library"):
+        print(f"wrote {len(cfg['library'])} library copies")
 
     # ---- pass 1: parse all, collect the API (functions in the mkfit namespace) ----
     files = []

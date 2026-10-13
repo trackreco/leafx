@@ -7,6 +7,7 @@
 #   ROOTSYS      the ROOT the standalone build used, if it was built with ROOT
 #   GEOM         a phase-2 geometry file (default: $MKFIT_BUILD/CMS-phase2.bin)
 #   NBATCH       batches of NN tracks per function (default 2000)
+#   DUMP         write the dump for the GPU test (test/gpu/) to this file
 #   MODE         strict:    -O2 -fno-fast-math; the reference is MkFitCore's propagation sources compiled
 #                           into the test with the same flags, so any difference is the copy's.
 #                ofast:     the build's own flags; the reference is libMkFitCore as built.
@@ -62,4 +63,4 @@ LIBS="$LIBS -ltbb"
 mkdir -p $BIN
 echo "MODE=$MODE OPT=$OPT"
 g++ $CPPFLAGS $CXXFLAGS -o $BIN/test_leaf_$MODE $HERE/test/test_leaf.cc $REFSRC $LIBS
-$BIN/test_leaf_$MODE ${GEOM:-$MKFIT_BUILD/CMS-phase2.bin} ${NBATCH:-2000} $MODE
+$BIN/test_leaf_$MODE ${GEOM:-$MKFIT_BUILD/CMS-phase2.bin} ${NBATCH:-2000} $MODE ${DUMP:+dump=$DUMP}
