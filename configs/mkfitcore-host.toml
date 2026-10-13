@@ -1,4 +1,4 @@
-# leafx config: MkFitCore's propagation, generated for a HOST build (what test/run-test.sh compiles).
+# leafx config: MkFitCore's propagation and Kalman update, generated for a HOST build (what test/run-test.sh compiles).
 # A device build differs in prelude_includes and keep_angle_includes: it includes its own Matriplex
 # and declares, in the target namespace, the names listed under EXTERNAL NAMES in leafx_report.txt.
 #
@@ -36,8 +36,12 @@ prelude_includes = [
   "RecoTracker/MkFitCore/interface/TrackerInfo.h",
   "RecoTracker/MkFitCore/interface/MathInlineCore.h",
   "RecoTracker/MkFitCore/interface/cms_common_macros.h",
+  "RecoTracker/MkFitCore/interface/FunctionTypes.h",
   "FWCore/Utilities/interface/CMSUnrollLoop.h",
 ]
+
+# namespace-scope Matriplexes (the Kalman update's dummy outputs) become function-local
+localize_globals = true
 
 # In dependency order: the header with the declarations (and their default arguments) first.
 [[file]]
@@ -63,3 +67,14 @@ includes = ["PropagationMPlex.h"]
 src = "RecoTracker/MkFitCore/src/PropagationMPlexPlane.cc"
 out = "PropagationMPlexPlane.h"
 includes = ["PropagationMPlex.h"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.h"
+out = "KalmanUtilsMPlex.h"
+includes = ["PropagationMPlex.h"]
+
+[[file]]
+src = "RecoTracker/MkFitCore/src/KalmanUtilsMPlex.cc"
+out = "KalmanUtilsMPlexImpl.h"
+includes = ["KalmanUtilsMPlex.h"]
+splice = ["KalmanUtilsMPlex.icc"]

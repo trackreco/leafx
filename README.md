@@ -12,9 +12,9 @@ one track per thread. MkFitCore keeps its own code and build. The port owns the 
 the generated copy, and regenerates the copy when MkFitCore changes.
 
 ```
-python3 leafx.py configs/propagation-host.toml -o OUT --source-root CMSSW/src            # generate
-python3 leafx.py configs/propagation-host.toml -o OUT --source-root CMSSW/src --check    # exit 1 if OUT is stale
-python3 leafx.py configs/propagation-host.toml -o OUT --source-root CMSSW/src --verify -I VDT_INCLUDE
+python3 leafx.py configs/mkfitcore-host.toml -o OUT --source-root CMSSW/src            # generate
+python3 leafx.py configs/mkfitcore-host.toml -o OUT --source-root CMSSW/src --check    # exit 1 if OUT is stale
+python3 leafx.py configs/mkfitcore-host.toml -o OUT --source-root CMSSW/src --verify -I VDT_INCLUDE
 python3 leafx.py test/markup/sample.toml -o OUT                                          # the markup sample
 ```
 

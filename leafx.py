@@ -437,6 +437,17 @@ class FileXform:
 
         with open(self.src) as fh:
             text = fh.read()
+        # `splice`: file-scope `#include "X"` replaced by the text of X (e.g. a .icc with helpers)
+        self.spliced = []
+        for name in fcfg.get("splice", []):
+            path = os.path.join(os.path.dirname(self.src), name)
+            pat = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"' + re.escape(name) + r'"[^\n]*$', re.M)
+            if not pat.search(text):
+                raise RuntimeError(f"{self.src_rel}: splice: no #include \"{name}\"")
+            with open(path) as fh:
+                inc = fh.read()
+            text = pat.sub(lambda m: inc, text, count=1)
+            self.spliced.append(os.path.join(os.path.dirname(self.src_rel), name))
         self.text_orig = text
         lines = text.split("\n")
         lines = strip_marked_regions(lines)
@@ -452,6 +463,8 @@ class FileXform:
         self.detail_ns = f"detail_{self.stem}"
         self.kernels = set()
         self.detail_names = set()
+        self.local_globals = {}  # name -> Matriplex type: namespace-scope Matriplexes made function-local
+        self.nondeducible = set()  # functions templated on N that callers must give <N> explicitly
 
     # ---- helpers ----------------------------------------------------------
 
@@ -565,11 +578,16 @@ class FileXform:
             # (with N = NN, ADL through mkfit::PropagationFlags would find MkFitCore's own
             # non-template function and prefer it)
             if not qualified_before and nxt is not None and nxt.text in ("(", "<"):
+                explicit = f"<{self.lane}>" if (t.text in self.nondeducible and nxt.text == "(" and templated) else ""
                 if in_detail is not None and t.text in self.detail_names:
                     edits.append((t.start, t.start, f"{self.target}::{in_detail}::"))
+                    if explicit:
+                        edits.append((t.end, t.end, explicit))
                     continue
                 if t.text in self.api_names:
                     edits.append((t.start, t.start, f"{self.target}::"))
+                    if explicit:
+                        edits.append((t.end, t.end, explicit))
                     continue
                 if nxt.text == "(" and t.text not in BUILTIN_TYPES and t.text not in local \
                         and t.text not in as_value \
@@ -688,13 +706,24 @@ class FileXform:
             close = self.p.match[it.paren]
             sig_types = self.uses_mplex(it.start, close + 1, types)
             body_types = it.body is not None and self.uses_mplex(it.body[0], it.body[1] + 1, types)
-            templated = sig_types
+            templated = sig_types or body_types
             if body_types and not sig_types:
-                templated = False  # rewrite_span reports the error
+                self.report.note(self.src_rel, T[it.start].line,
+                                 f"{it.name}: {self.lane} is not deducible from its arguments; "
+                                 f"calls from generated code get <{self.lane}>")
             protected = self.head_fix(it, templated, edits, types)
             self.rewrite_span(it.start, it.end, types, templated, in_detail, edits, it.name, protected)
             if it.body is not None:
                 self.vla_fix(it.body, edits, it.name, self.params_of(it))
+                used = sorted({T[k].text for k in self.p.sig(it.body[0], it.body[1])
+                               if T[k].kind == "id" and T[k].text in self.local_globals})
+                if used:
+                    if not templated:
+                        self.report.error(self.src_rel, T[it.start].line,
+                                          f"{it.name}: uses {', '.join(used)} but is not a template on {self.lane}")
+                    decl = "".join(f"\n{self.local_globals[u]}<{self.lane}> {u};  // leafx: was namespace-scope"
+                                   for u in used)
+                    edits.append((T[it.body[0]].end, T[it.body[0]].end, decl))
             return self.render(it.start, it.end, edits), templated
         if it.kind == "alias":
             self.rewrite_span(it.start, it.end, types, None, in_detail, edits, it.name or "alias")
@@ -718,9 +747,18 @@ class FileXform:
                 words = [self.toks[k].text for k in self.p.sig(it.start, it.end)]
                 if words[:2] == ["using", "namespace"] and words[2] in self.drop_usings:
                     continue
+                g = self.global_matriplex(it, types)
+                if g:
+                    self.report.note(self.src_rel, self.line(it.start),
+                                     f"namespace-scope {g[1]} {g[0]}: a local variable in each function that uses it")
+                    continue
                 self.report.note(self.src_rel, self.line(it.start), f"dropped: {' '.join(words)[:80]}")
                 continue
             if it.kind == "class":
+                words = [self.toks[k].text for k in self.p._skip_template_headers(self.p.sig(it.start, it.end))]
+                if words and words[0] == "enum":
+                    out.append(f"// leafx: {self.src_rel}:{self.line(it.start)}\n{self.render(it.start, it.end, [])}\n")
+                    continue
                 self.report.error(self.src_rel, self.line(it.start), f"class {it.name}: not handled in leaf mode")
                 continue
             txt, templ = self.item_text(it, types, in_detail)
@@ -730,6 +768,38 @@ class FileXform:
                 types.add(it.name)
             out.append(f"// leafx: {self.src_rel}:{self.line(it.start)}\n{txt}\n")
         return prev_end
+
+    def global_matriplex(self, it, types):
+        """(name, type) if statement `it` declares a namespace-scope variable of a Matriplex type."""
+        if not self.cfg.get("localize_globals", True):
+            return None
+        sig = self.p.sig(it.start, it.end)
+        ids = [self.toks[k].text for k in sig if self.toks[k].kind == "id"]
+        if self.toks[sig[-1]].text != ";" or any(self.toks[k].text in ("(", "=", "{", "<") for k in sig):
+            return None
+        mtypes = [x for x in ids if x in types]
+        if len(mtypes) != 1 or ids[-1] in types:
+            return None
+        return ids[-1], mtypes[0]
+
+    def collect_nondeducible(self, items, types):
+        """Functions that need the lane count but cannot deduce it from their arguments."""
+        for it in items:
+            if it.kind == "ns":
+                self.collect_nondeducible(it.children, types)
+            elif it.kind in ("func", "decl") and it.body is not None:
+                close = self.p.match[it.paren]
+                if self.uses_mplex(it.body[0], it.body[1] + 1, types) and not self.uses_mplex(it.start, close + 1, types):
+                    self.nondeducible.add(it.name)
+
+    def collect_globals(self, items, types):
+        for it in items:
+            if it.kind == "ns":
+                self.collect_globals(it.children, types)
+            elif it.kind == "other":
+                g = self.global_matriplex(it, types)
+                if g:
+                    self.local_globals[g[0]] = g[1]
 
     def angle_includes(self):
         """File-scope `#include <...>` lines of the source (external headers such as vdt)."""
@@ -744,19 +814,41 @@ class FileXform:
     def generate(self):
         out = []
         types = set(self.mplex_types)
-        prev_end = 0
+        self.collect_globals(self.items, types)
+        self.collect_nondeducible(self.items, types)
+        # names of the anonymous namespaces and of file-scope functions (e.g. from a spliced .icc):
+        # both go to the detail namespace
         for it in self.items:
+            if it.kind == "ns" and it.name is None:
+                self.collect_detail_names(it.children)
+            elif it.kind in ("func", "decl"):
+                self.detail_names.add(it.name)
+        prev_end = 0
+        file_scope = []
+        for it in self.items + [None]:
+            if it is not None and it.kind in ("func", "decl"):
+                file_scope.append(it)
+                continue
+            if file_scope:  # a run of file-scope functions: into the detail namespace
+                ns = f"{self.target}::{self.detail_ns}"
+                body = []
+                self.emit_items(file_scope, self.detail_ns, body, types, prev_end)
+                out.append(f"namespace {ns} {{\n\n" + "\n".join(body) + f"\n}}  // namespace {ns}\n")
+                prev_end = file_scope[-1].end
+                file_scope = []
+            if it is None:
+                break
             if it.kind != "ns":
                 if it.kind == "other" or it.kind == "alias":
                     self.report.note(self.src_rel, self.line(it.start), "file-scope statement dropped")
                 prev_end = it.end
                 continue
             if it.name is None:
-                self.collect_detail_names(it.children)
                 ns = f"{self.target}::{self.detail_ns}"
                 in_detail = self.detail_ns
-            elif it.name == "mkfit":
-                ns = self.target
+            elif it.name in self.cfg.get("namespace_map", {"mkfit": ""}):
+                sub = self.cfg.get("namespace_map", {"mkfit": ""})[it.name]
+                ns = self.target + (f"::{sub}" if sub else "")
                 in_detail = self.detail_ns if self.detail_names else None
             else:
                 raise RuntimeError(f"{self.src_rel}: namespace {it.name} has no mapping")
@@ -865,30 +957,34 @@ def verify_with_libclang(fx, cfg):
         rdir = subprocess.run(["clang", "-print-resource-dir"], capture_output=True, text=True).stdout.strip()
     except OSError:
         rdir = ""
-    args = ["-x", "c++", "-std=c++17"] + ([f"-resource-dir={rdir}"] if rdir else []) + \
+    args = ["-x", "c++", f"-std={cfg.get('verify_std', 'c++20')}"] + ([f"-resource-dir={rdir}"] if rdir else []) + \
            [f"-I{p}" for p in cfg.get("include_paths", [])] + [f"-D{d}" for d in cfg.get("define", [])]
     tu = ci.Index.create().parse(fx.src, args=args)
     errs = [d for d in tu.diagnostics if d.severity >= ci.Diagnostic.Error]
     if errs:
         print(f"  verify {fx.src_rel}: libclang reports {len(errs)} errors, first: {errs[0]}")
-    want = set()
+    files = {fx.src} | {os.path.join(cfg["source_root"], s) for s in fx.spliced}
+    # with a spliced file the line numbers shift, so compare names (with multiplicity) only
+    key = (lambda name, line: (name, 0)) if fx.spliced else (lambda name, line: (name, line))
+    from collections import Counter
+    want = Counter()
     for c in tu.cursor.walk_preorder():
-        if c.location.file and c.location.file.name == fx.src and c.is_definition() and \
+        if c.location.file and c.location.file.name in files and c.is_definition() and \
                 c.kind in (ci.CursorKind.FUNCTION_DECL, ci.CursorKind.FUNCTION_TEMPLATE):
-            want.add((c.spelling, c.extent.end.line))
-    have = set()
+            want[key(c.spelling, c.extent.end.line)] += 1
+    have = Counter()
 
     def walk(items):
         for it in items:
             if it.kind == "ns":
                 walk(it.children)
             elif it.kind == "func":
-                have.add((it.name.split("::")[-1], fx.toks[it.body[1]].line))
+                have[key(it.name.split("::")[-1], fx.toks[it.body[1]].line)] += 1
     walk(fx.items)
     # lines in fx are those of the source (pre-passes keep the line count)
     miss, extra = want - have, have - want
-    print(f"  verify {fx.src_rel}: libclang {len(want)} definitions, leafx {len(have)}; "
-          f"missed {sorted(miss)} extra {sorted(extra)}")
+    print(f"  verify {fx.src_rel}: libclang {sum(want.values())} definitions, leafx {sum(have.values())}; "
+          f"missed {sorted(miss.elements())} extra {sorted(extra.elements())}")
 
 
 def main():

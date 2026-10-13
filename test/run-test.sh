@@ -1,5 +1,5 @@
 #!/bin/bash
-# Functional test: MkFitCore's propagation against the leafx copy, at N = NN and at N = 1.
+# Functional test: MkFitCore's propagation and Kalman update against the leafx copy, at N = NN and at N = 1.
 #
 # Environment:
 #   CMSSW_SRC    the src/ tree with RecoTracker/MkFitCore (required)
@@ -39,15 +39,15 @@ case $MODE in
 esac
 
 # generate the copy from the tree under test
-python3 $HERE/leafx.py $HERE/configs/propagation-host.toml -o $GEN --source-root $CMSSW_SRC
+python3 $HERE/leafx.py $HERE/configs/mkfitcore-host.toml -o $GEN --source-root $CMSSW_SRC
 
 CPPFLAGS="-I$GEN -I$CMSSW_SRC -I$MKFIT_BUILD/mkFit-external $MKFIT_DEFS"
 [ -n "$ROOTSYS" ] && CPPFLAGS="$CPPFLAGS -I$(root-config --incdir)"
-CXXFLAGS="$OPT -std=c++17 -pthread -Wall -Wno-unused-parameter -Wno-unused-local-typedefs -Wno-attributes -Wno-psabi -Wno-vla"
+CXXFLAGS="$OPT -std=c++20 -pthread -Wall -Wno-unused-parameter -Wno-unused-local-typedefs -Wno-attributes -Wno-psabi -Wno-vla"
 
 REFSRC=""
 if [ $MODE != ofast ]; then
-  for f in PropagationMPlex PropagationMPlexCommon PropagationMPlexEndcap PropagationMPlexPlane; do
+  for f in PropagationMPlex PropagationMPlexCommon PropagationMPlexEndcap PropagationMPlexPlane KalmanUtilsMPlex; do
     REFSRC="$REFSRC $CMSSW_SRC/RecoTracker/MkFitCore/src/$f.cc"
   done
 fi
@@ -61,5 +61,5 @@ LIBS="$LIBS -ltbb"
 
 mkdir -p $BIN
 echo "MODE=$MODE OPT=$OPT"
-g++ $CPPFLAGS $CXXFLAGS -o $BIN/test_prop_$MODE $HERE/test/test_prop.cc $REFSRC $LIBS
-$BIN/test_prop_$MODE ${GEOM:-$MKFIT_BUILD/CMS-phase2.bin} ${NBATCH:-2000} $MODE
+g++ $CPPFLAGS $CXXFLAGS -o $BIN/test_leaf_$MODE $HERE/test/test_leaf.cc $REFSRC $LIBS
+$BIN/test_leaf_$MODE ${GEOM:-$MKFIT_BUILD/CMS-phase2.bin} ${NBATCH:-2000} $MODE
