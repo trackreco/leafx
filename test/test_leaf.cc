@@ -192,7 +192,8 @@ struct Gen {
         in.par(n, i, 0) = par[i];
       in.chg(n, 0, 0) = u(0.f, 1.f) < 0.5f ? -1 : 1;
       // covariance: diagonal plus a few correlations, positive definite
-      float d[6] = {g(0.01f) * g(0.01f) + 1e-4f, 1e-4f + 1e-5f * u(0, 1), 1e-3f + 1e-3f * u(0, 1),
+      const float gx = g(0.01f);  // one draw, squared: a product of two draws is negative for ~10 % of tracks
+      float d[6] = {gx * gx + 1e-4f, 1e-4f + 1e-5f * u(0, 1), 1e-3f + 1e-3f * u(0, 1),
                     std::pow(0.02f / pt, 2.f) * u(0.5f, 1.5f), 1e-6f * u(0.5f, 2.f), 1e-6f * u(0.5f, 2.f)};
       for (int i = 0; i < 6; ++i)
         for (int j = 0; j <= i; ++j)

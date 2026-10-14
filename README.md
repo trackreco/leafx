@@ -172,12 +172,13 @@ copy at N = 1, lane by lane.
 
 **The transformation is exact.** Under `-Ofast` the compiler optimises the same arithmetic differently in
 different code contexts: vectorised against scalar math functions, and reassociation.
-- In the propagation, the worst covariance difference is 1e-2 of sqrt(C_ii C_jj), at N = 1 in the
+- In the propagation, the worst covariance difference is 4e-3 of sqrt(C_ii C_jj), at N = 1 in the
   iterative propagation to R.
-- In the Kalman updates, the same source compiled for 8 lanes and for 1, both under `-Ofast`, already
-  differs by up to 3.3e9 of sqrt(C_ii C_jj) on 30 of 7,574 tracks. The update (I − KH)C subtracts large
+- In the plane Kalman updates, the same source compiled for 8 lanes and for 1, both under `-Ofast`, already
+  differs by up to 16 of sqrt(C_ii C_jj) on 44 of 7,574 tracks. The update (I − KH)C subtracts large
   numbers to get small ones, and that amplifies last-bit differences on the ill-conditioned updates among
-  these random inputs.
+  these random inputs. The test does not restrict the angle between track and plane, and the worst
+  cases are tracks that cross the plane at a grazing angle.
 
 ### GPU: `test/gpu/run-gpu-test.sh`
 
@@ -188,10 +189,10 @@ Result: RTX 4070 (sm_89), CUDA 13.3, gcc 13 host compiler, inside `cmssw-el9`; `
 
 | | result |
 |---|---|
-| nvcc's host compilation vs gcc 15's | **bitwise identical**, all 16 functions |
+| nvcc's host compilation (gcc 13, glibc 2.34) vs gcc 15's (glibc 2.41) | **bitwise identical** in 15 of 16 functions; the per-hit plane propagation differs on 274 of 7,574 tracks, by up to 2e-5 relative in a parameter (not investigated; it calls the standard library's math functions, and the two glibc versions differ) |
 | GPU vs host: plane and line propagation, `kalmanUpdate`, `kalmanComputeChi2`, their endcap versions, the three Plex mini propagators | **bitwise identical** (9 of 16) |
 | GPU vs host: propagation to R and Z, the plane Kalman updates, the per-hit plane propagation | rounding level: the device's `std::sin`, `std::cos` and `std::atan2` are other implementations than glibc's |
-| GPU vs host: `kalmanPropagateAndUpdateAndChi2Plane` | 16 tracks above 1e-2 of sqrt(C_ii C_jj) (3 of them with a negative variance on the host already); fewer than the CPU shows between 8 lanes and 1 under `-Ofast` (30) |
+| GPU vs host: `kalmanPropagateAndUpdateAndChi2Plane` | 24 tracks above 1e-2 of sqrt(C_ii C_jj); fewer than the CPU shows between 8 lanes and 1 under `-Ofast` (44) |
 
 With nvcc's default `--fmad=true` every function differs at rounding level.
 
